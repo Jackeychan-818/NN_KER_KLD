@@ -124,13 +124,13 @@ if __name__ == '__main__':
 
             ce_loss = criterion(output, target)
 
-            # 定义一个loss类
+            
             rff_ndr = Compute_RFF_NDR(output, rgl=0.1, l=128)
-            #算   self.rff_xs 和 self.inv_matrix
+            
             rff_ndr.update_rff(output)  #
-            # 算出一个矩阵
+            
             rff_loss = rff_ndr.compute_loss()
-            # 把这个loss加进去
+            
             loss = ce_loss + 0.1 * rff_loss
             test_loss += loss.item()  # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
