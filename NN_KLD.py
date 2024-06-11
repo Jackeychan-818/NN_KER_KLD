@@ -124,7 +124,6 @@ if __name__ == '__main__':
 
             ce_loss = criterion(output, target)
 
-            
             rff_ndr = Compute_RFF_NDR(output, rgl=0.1, l=128)
             
             rff_ndr.update_rff(output)  #
