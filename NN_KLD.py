@@ -8,22 +8,42 @@ import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
 
-class Compute_RFF_NDR:
-    def __init__(self, xs, rgl, l):
-        self.l = l
-        self.rgl = rgl
-        self.device = xs.device
+class NetHook(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.outputs = []
+
+    def __call__(self, module, module_in, module_out):
+        self.outputs = module_out
+
+    def clear(self):
+        self.outputs = []
+
+
+class Compute_RFF_NDR(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, xs, ys, rgl, l):
         n_xs, d = xs.shape
-        self.omega = torch.normal(0, 1, (d, l)).to(self.device) / l
-        self.theta = (torch.rand(l) * 2 * math.pi).to(self.device)
-        self.update_rff(xs)
+        n_ys, _ = ys.shape
+        self.omega = torch.normal(0, 1, (d, l)).to(xs.device) / l
+        self.theta = (torch.rand(l) * 2 * math.pi).to(xs.device)
+
+        self.rff_xs = torch.cos((xs @ self.omega) + self.theta.repeat((n_xs, 1)))
+        self.rff_ys = torch.cos((ys @ self.omega) + self.theta.repeat((n_ys, 1)))
+        self.w = (torch.linalg.inv(self.rff_ys.T @ self.rff_ys / n_ys + (rgl * torch.eye(l).to(xs.device))).detach()
+             @ (torch.mean(self.rff_xs, dim=0))) # - torch.mean(self.rff_ys, dim=0)))
+        return (torch.mean(self.rff_xs, dim=0))@ self.w
 
     def update_rff(self, xs):
         n_xs, _ = xs.shape
-        self.rff_xs = torch.cos((xs @ self.omega) + self.theta.repeat((n_xs, 1)))
-        self.inv_matrix = torch.linalg.inv(self.rff_xs.T @ self.rff_xs / n_xs + (self.rgl * torch.eye(self.l).to(self.device)))
+        rff_xs = torch.cos((xs @ self.omega) + self.theta.repeat((n_xs, 1)))
+        inv_matrix = torch.linalg.inv(self.rff_xs.T @ self.rff_xs / n_xs + (self.rgl * torch.eye(self.l).to(self.device)))
 
-        self.rff_loss_constant = self.inv_matrix.clone().detach()
+        rff_loss_constant =inv_matrix.clone().detach()
+        return rff_xs,rff_loss_constant
+
     def compute_loss(self):
         return torch.mean(self.rff_xs, dim=0) @ (self.rff_loss_constant @ torch.mean(self.rff_xs, dim=0))
 
@@ -31,33 +51,20 @@ class Compute_RFF_NDR:
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, 3, 1)
+        self.conv1 = nn.Conv2d(1, 32, 3, 1)
         self.conv2 = nn.Conv2d(32, 64, 3, 1)
-        self.conv3 = nn.Conv2d(64, 128, 3, 1)
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
-        self._initialize_fc_layers()  # Initialize fully connected layers with correct size
+        self.fc1 = nn.Linear(9216, 128)
+        self.fc2 = nn.Linear(128, 10)
 
-    def _initialize_fc_layers(self):
-        sample_input = torch.zeros(1, 3, 32, 32)
-        sample_output = self._forward_conv_layers(sample_input)
-        flattened_size = sample_output.numel()
-        self.fc1 = nn.Linear(flattened_size, 256)
-        self.fc2 = nn.Linear(256, 10)
-
-    def _forward_conv_layers(self, x):
+    def forward(self, x):
         x = self.conv1(x)
         x = F.relu(x)
         x = self.conv2(x)
         x = F.relu(x)
-        x = self.conv3(x)
-        x = F.relu(x)
         x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
-        return x
-
-    def forward(self, x):
-        x = self._forward_conv_layers(x)
         x = torch.flatten(x, 1)
         x = self.fc1(x)
         x = F.relu(x)
@@ -68,52 +75,56 @@ class Net(nn.Module):
 
 
 if __name__ == '__main__':
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-    train_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=512, shuffle=True)
-    test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=1000, shuffle=False)
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    train_set = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=512, shuffle=True, drop_last=True)
+    test_set = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=1000, shuffle=False, drop_last=True)
+    hooker = NetHook()
 
-    # initialize the model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = Net().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.CrossEntropyLoss()
-    train_losses = []
+    model.fc1.register_forward_hook(hooker)
 
-    # training process
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    criterion = nn.CrossEntropyLoss()
+
+
+    train_losses = []
+    compute_RFF_NDR = Compute_RFF_NDR()
+
     for epoch in range(20):
         model.train()
         epoch_loss = 0
-        for data, target in train_loader:
+        for i, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
-            output = model(data)  # forward
+            out = model(data)
+            # [0.1,0.3,0.6]
+            ref_output = hooker.outputs
 
-            # cross entropy
-            ce_loss = criterion(output, target)
+            # ce_loss = criterion(out, target)
 
-            # Update RFF for the current batch
-            rff_ndr = Compute_RFF_NDR(output, rgl=0.1, l=128)
-            rff_ndr.update_rff(output)  # Update the inverse matrix
-            rff_loss = rff_ndr.compute_loss()
+            # loss function
+            rff_loss = compute_RFF_NDR(ref_output[target == 0], ref_output[target == 1], rgl=0.1, l=128)
 
-            # Combined loss
-            loss = ce_loss + 0.1 * rff_loss
+            # loss = rff_loss + ce_loss  # loss function
+            loss = rff_loss  # loss function
             loss.backward()  # backward
-            optimizer.step()  # update the parameters
+            optimizer.step()  # upadate
 
             epoch_loss += loss.item()
+            # print(f"batch nums:{i}")
+            # print(f"ce_loss{ce_loss}", f"rff_loss:{rff_loss}")
+            # print(f"rff_loss:{rff_loss}")
 
-        # average loss
         avg_epoch_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_epoch_loss)
         print(f'Train Epoch: {epoch} \tLoss: {avg_epoch_loss:.6f}')
 
-    # save parameters
-    torch.save(model.state_dict(), 'cifar10_cnn_rff_ndr.pth')
+    torch.save(model.state_dict(), 'mnist_cnn_rff_ndr.pth')
 
-    # testing procedure
+    # Test
     model.eval()
     test_loss = 0
     correct = 0
@@ -121,25 +132,19 @@ if __name__ == '__main__':
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
+            test_output = hooker.outputs
 
-            ce_loss = criterion(output, target)
+            rff_loss = compute_RFF_NDR(test_output[target == 0], test_output[target == 1], rgl=0.1, l=128)
+            loss = rff_loss
 
-            rff_ndr = Compute_RFF_NDR(output, rgl=0.1, l=128)
-            
-            rff_ndr.update_rff(output)  #
-            
-            rff_loss = rff_ndr.compute_loss()
-            
-            loss = ce_loss + 0.1 * rff_loss
-            test_loss += loss.item()  # sum up batch loss
-            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+            test_loss += loss.item()
+            pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
-    accuracy = 100. * correct / len(test_loader.dataset)
-    print(f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.0f}%)\n')
+    print(
+        f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ')
 
-    # plot training loss
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, marker='o')
     plt.title('Training Loss Over Epochs')
