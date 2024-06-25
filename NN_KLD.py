@@ -5,8 +5,29 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
+import matplotlib.pyplot as pltimport
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
+
+# Function to set the seed for reproducibility
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+# Set the seed
+set_seed(42)
 
 class NetHook(nn.Module):
     def __init__(self, *args, **kwargs):
@@ -56,7 +77,7 @@ class Net(nn.Module):
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
         self.fc1 = nn.Linear(9216, 128)
-        self.fc2 = nn.Linear(128, 10)
+        self.fc2 = nn.Linear(128, 2)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -86,7 +107,7 @@ if __name__ == '__main__':
     model = Net().to(device)
     model.fc1.register_forward_hook(hooker)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=0.0005)
     criterion = nn.CrossEntropyLoss()
 
 
@@ -98,18 +119,20 @@ if __name__ == '__main__':
         epoch_loss = 0
         for i, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
+            index=(target==0)| (target==1)
+            data=data[index]
+            target=target[index]
             optimizer.zero_grad()
             out = model(data)
-            # [0.1,0.3,0.6]
             ref_output = hooker.outputs
 
-            # ce_loss = criterion(out, target)
+            ce_loss = criterion(out, target)
 
             # loss function
-            rff_loss = compute_RFF_NDR(ref_output[target == 0], ref_output[target == 1], rgl=0.1, l=128)
+            rff_loss = -compute_RFF_NDR(ref_output[target == 0], ref_output[target == 1], rgl=0.1, l=128)
 
-            # loss = rff_loss + ce_loss  # loss function
-            loss = rff_loss  # loss function
+            loss = rff_loss + 0.5 * ce_loss  # loss function
+            #loss = rff_loss# loss function
             loss.backward()  # backward
             optimizer.step()  # upadate
 
@@ -131,10 +154,13 @@ if __name__ == '__main__':
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
+            index=(target==0)| (target==1)
+            data=data[index]
+            target=target[index]
             output = model(data)
             test_output = hooker.outputs
 
-            rff_loss = compute_RFF_NDR(test_output[target == 0], test_output[target == 1], rgl=0.1, l=128)
+            rff_loss = -compute_RFF_NDR(test_output[target == 0], test_output[target == 1], rgl=0.1, l=128)
             loss = rff_loss
 
             test_loss += loss.item()
@@ -143,7 +169,7 @@ if __name__ == '__main__':
 
     test_loss /= len(test_loader.dataset)
     print(
-        f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ')
+        f'\nTest set: Average loss: {test_loss:.4f}')
 
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, marker='o')
