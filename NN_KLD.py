@@ -1,7 +1,8 @@
-import torchvision
-import torchvision.transforms as transforms
+import math
+import numpy as np
 import matplotlib.pyplot as pltimport
 import torch
+import random
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -22,7 +23,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 # Set the seed
-set_seed(42)
+set_seed(100)
 
 class NetHook(nn.Module):
     def __init__(self, *args, **kwargs):
@@ -72,7 +73,7 @@ class Net(nn.Module):
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
         self.fc1 = nn.Linear(9216, 128)
-        self.fc2 = nn.Linear(128, 2)
+        self.fc2 = nn.Linear(128, 1)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -90,6 +91,7 @@ class Net(nn.Module):
         return output
 
 
+
 if __name__ == '__main__':
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
     train_set = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
@@ -98,18 +100,20 @@ if __name__ == '__main__':
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=1000, shuffle=False, drop_last=True)
     hooker = NetHook()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('mps')
     model = Net().to(device)
     model.fc1.register_forward_hook(hooker)
+    model.load_state_dict(torch.load("mnist_cnn_bce.pth"))
 
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
+    optimizer = optim.Adam(model.parameters(), lr=0.000001)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.01, patience=2)
     criterion = nn.CrossEntropyLoss()
 
 
     train_losses = []
     compute_RFF_NDR = Compute_RFF_NDR()
 
-    for epoch in range(20):
+    for epoch in range(100):
         model.train()
         epoch_loss = 0
         for i, (data, target) in enumerate(train_loader):
@@ -121,14 +125,20 @@ if __name__ == '__main__':
             out = model(data)
             ref_output = hooker.outputs
 
-            ce_loss = criterion(out, target)
+            #ce_loss = criterion(out, target)
 
             # loss function
             rff_loss = -compute_RFF_NDR(ref_output[target == 0], ref_output[target == 1], rgl=0.1, l=128)
 
-            loss = rff_loss + 0.5 * ce_loss  # loss function
-            #loss = rff_loss# loss function
+            #loss = rff_loss + 0.5 * ce_loss  # loss function
+
+            #if i % 10 == 0:
+            #    print(f'Batch {i}, ce_loss: {ce_loss.item()}, rff_loss: {rff_loss.item()}, total_loss: {loss.item()}')
+            loss = rff_loss# loss function
             loss.backward()  # backward
+            # Gradient clipping
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()  # upadate
 
             epoch_loss += loss.item()
@@ -138,9 +148,11 @@ if __name__ == '__main__':
 
         avg_epoch_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_epoch_loss)
+        scheduler.step(avg_epoch_loss)
         print(f'Train Epoch: {epoch} \tLoss: {avg_epoch_loss:.6f}')
+        print(f'Current learning rate: {scheduler.optimizer.param_groups[0]["lr"]}')
 
-    torch.save(model.state_dict(), 'mnist_cnn_rff_ndr.pth')
+    # torch.save(model.state_dict(), 'mnist_cnn_rff_ndr.pth')
 
     # Test
     model.eval()
