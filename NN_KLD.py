@@ -100,6 +100,8 @@ if __name__ == '__main__':
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=1000, shuffle=False, drop_last=True)
     hooker = NetHook()
 
+    #device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    #make use of gpu for apple chips
     device = torch.device('mps')
     model = Net().to(device)
     model.fc1.register_forward_hook(hooker)
