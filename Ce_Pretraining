@@ -55,6 +55,8 @@ if __name__ == '__main__':
     test_set = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=1000, shuffle=False, drop_last=True)
 
+    #device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    #for apple chips
     device = torch.device('mps') if torch.backends.mps.is_built() else torch.device('cpu')
     model = Net().to(device)
 
